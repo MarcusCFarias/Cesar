@@ -1,0 +1,451 @@
+; Nome: Marcus Farias
+; Matricula: 00291259
+
+
+;------------------------------------------------------------------------------
+;	Definição das áreas específicas
+;------------------------------------------------------------------------------
+
+_KERNEL:	EQU H0000		
+_VETTAB:	EQU H0100
+_RESET:		EQU _VETTAB+H0100
+_APP:		EQU H8000
+_IOAREA16:	EQU HFF80
+_IOAREA08:	EQU HFFC0
+;------------------------------------------------------------------------------
+;	Área reservada para os periféricos
+;------------------------------------------------------------------------------
+
+; Acesso em 16 bits
+ORG _IOAREA16
+
+		DAW [31]
+
+	IVET:	DW 0			; Vetor de interrupção
+
+; Acesso em 8 bits
+ORG _IOAREA08
+			DAB [23]
+	TIMDT:	DB 0			; Registro de programação do timer
+	INTS:	DB 0			; INTERRUPT STATUS: IP x x x . x x IPStec IPStim
+	INTE:	DB 0			; INTERRUPT ENABLE: IE x x x . x x IEStec IEStim
+	TECST:	DB 0			; Status do teclado
+	TECDT:	DB 0			; Dado do teclado
+	VISOR:	DAB [36]		; Portas de acesso ao visor
+
+;------------------------------------------------------------------------------
+
+ORG _KERNEL
+	
+	JMP _RESET
+
+ORG _VETTAB
+
+
+			DW kbhit			; WORD	kbhit()
+			DW getchar			; BYTE	getchar()
+			DW putchar			; void	putchar(BYTE c)
+			DW putmsg			; void	putmsg(BYTE *msg)
+			DW timer			; void	timer(WORD tempo, WORD callback)
+			DW volume			; WORD	volume()
+
+;------------------------------------------------------------------------------
+;	Código de RESET (BOOT) do processador/interrupção
+;------------------------------------------------------------------------------
+
+ORG _RESET
+
+	CLR INTE			; Desabilitar o sistema de interrupções
+
+	MOV #_APP, R6			; Inicializar o stack pointer (SP = R6)
+
+	CLR TECST			; limpar status teclado
+	CLR TECDT			; limpar buffer do teclado
+	CLR TIMDT			; limpar configuração timer
+	CLR INTS			; limpar controle de interrupcao
+	MOV #ISR, IVET 			; setar endereço da interrupção
+
+	MOV #10, TIMDT			; Inicializar o timer
+
+	JSR R7, InicializarVisor
+
+	OR #h83, INTE 			; Habilitar interrupções
+
+	JMP _APP			; desvio para o endereço _APP da memória
+
+;------------------------------------------------------------------------------
+InicializarVisor:
+
+	JSR R7, InicializarVolume
+
+	JSR R7, FuncaoLimparAreaCaracteres
+
+	RTS R7
+
+FuncaoLimparAreaCaracteres:
+
+	MOV #VISOR, R1			; inicio programa
+	MOV #30, R4			; setar 30 ciclos
+
+FLV_Loop:
+
+	MOV #h20,(R1)
+	INC R1
+	SOB R4,FLV_Loop
+	
+	RTS R7
+
+InicializarVolume:
+	
+	MOV #VISOR, R1
+	MOV #'0', 33(R1)
+	MOV #'0', 34(R1)
+	MOV #'0', 35(R1)
+
+	RTS R7
+;------------------------------------------------------------------------------
+
+;-----------------------------------------------------------------------------------------
+ISR:
+	
+	mov		r0,-(r6)	; Salva registradores
+	mov		r1,-(r6)
+	mov		r2,-(r6)
+	mov		r3,-(r6)
+	mov		r4,-(r6)
+	mov		r5,-(r6)
+
+	MOV #0, TeclaVolume
+	MOV INTS, R0			; testar se for teclado
+	AND #2, R0
+	BNE ISR_Teclado
+
+ISR_Timer:
+
+	AND #hFFFE,INTS			; desliga bit de timer
+
+	TST LigarTimer			; Flag p saber se a função timer foi chamada
+	BEQ FimISR
+
+	SUB TIMDT, Timer_16Bits		; diminui o timer
+	BPL FimISR			; se for positivo continua o processo
+
+	MOV #0, LigarTimer		; desliga flag até chamar a funcao timer dnv
+	MOV CallBack, R4
+	JSR R7, (R4)			; faz a função de callback
+	
+	BR FimISR	
+	
+ISR_Teclado:
+
+	AND #hFFFD,INTS				; Desliga bit de INT TECLADO	
+	MOV TECDT, R2
+
+	ValidaSeEhSomaISR:
+		JMP ValidaSeEhSoma			
+	
+	ValidaSeEhSubtracaoISR:
+		JMP ValidaSeEhSubtracao
+
+	FimISR_Teclado:
+		TST TeclaVolume
+		BEQ FimISR
+		CLR TECST
+	
+FimISR:
+	
+	mov		(r6)+,r5	; Retorna os registradores da pilha
+	mov		(r6)+,r4
+	mov		(r6)+,r3
+	mov		(r6)+,r2
+	mov		(r6)+,r1
+	mov		(r6)+,r0
+	RTI
+;------------------------------------------------------------------------------
+ValidaSeEhSoma:
+
+	CMP #'+', R2				; mais_1
+	BEQ Somar1
+	CMP #'.', R2				; mais_10
+	BEQ Somar10
+	CMP #'>', R2				; mais_100
+	BEQ Somar100
+
+	JMP ValidaSeEhSubtracaoISR
+Somar1:
+	MOV #1, TeclaVolume
+	MOV #65535, R4
+	MOV (R4), ByteVolume
+	CMP #'9', ByteVolume
+	BEQ ArrumarDigito9_Unidade
+	ADD #1, (R4)
+	JMP FimISR_Teclado	
+	
+ArrumarDigito9_Unidade:
+	MOV #'0', (R4)
+
+Somar10:
+	MOV #1, TeclaVolume
+	MOV #65534, R4
+	MOV (R4), ByteVolume
+	CMP #'9', ByteVolume
+	BEQ ArrumarDigito9_Dezena
+	ADD #1, (R4)
+	JMP FimISR_Teclado		
+	
+ArrumarDigito9_Dezena:
+
+	DEC R4
+	CMP #'9', (R4)
+	BEQ ArrumarDigito9_Centena
+	INC R4
+	MOV #'0', (R4)
+
+Somar100:
+	MOV #1, TeclaVolume
+	MOV #65533, R4
+	MOV (R4), ByteVolume
+	CMP #'9', ByteVolume
+	BEQ ArrumarDigito9_Centena
+	ADD #1, (R4)
+	JMP FimISR_Teclado		
+
+ArrumarDigito9_Centena:
+	INC R4
+	MOV #'9', (R4)
+	INC R4
+	MOV #'9', (R4)
+	JMP FimISR_Teclado
+;------------------------------------------------------------------------------
+ValidaSeEhSubtracao:
+
+	CMP #'-', R2				; menos_1
+	BEQ Subtrair1 
+	CMP #',', R2				; menos_10
+	BEQ Subtrair10
+	CMP #'<', R2				; menos_100
+	BEQ Subtrair100
+
+	JMP FimISR_Teclado				; fim da isr de teclado pq ja validou as teclas de volume
+
+Subtrair1:
+	MOV #1, TeclaVolume
+	MOV #65535, R4
+	MOV (R4), ByteVolume
+	CMP #'0', ByteVolume
+	BEQ ArrumarDigito0_Unidade
+	SUB #1, (R4)
+	JMP FimISR_Teclado		
+
+ArrumarDigito0_Unidade:
+	MOV #'9', (R4)
+
+Subtrair10:
+	MOV #1, TeclaVolume
+	MOV #65534, R4
+	MOV (R4), ByteVolume
+	CMP #'0', ByteVolume
+	BEQ ArrumarDigito0_Dezena
+	SUB #1, (R4)
+	JMP FimISR_Teclado	
+
+ArrumarDigito0_Dezena:
+	MOV #'9', (R4)
+
+Subtrair100:
+	MOV #1, TeclaVolume
+	MOV #65533, R4
+	MOV (R4), ByteVolume
+	CMP #'0', ByteVolume
+	BEQ ArrumarDigito0_Centena
+	SUB #1, (R4)
+	JMP FimISR_Teclado	
+
+ArrumarDigito0_Centena:
+	MOV #'0', (R4)
+	INC R4
+	MOV #'0', (R4)
+	INC R4
+	MOV #'0', (R4)
+	JMP FimISR_Teclado
+
+;------------------------------------------------------------------------------
+; WORD	kbhit()
+;------------------------------------------------------------------------------
+kbhit:
+
+	MOV #1, R0			; se tiver tecla 0, senão 1
+
+	CMP TECST,#H80
+	BNE FimKbHit
+		
+	MOV #0, R0
+	
+	FimKbHit:
+		RTS R7
+
+;		
+;------------------------------------------------------------------------------
+; BYTE	getchar()
+;------------------------------------------------------------------------------
+getchar:
+
+	CMP TECST,#H80
+	BNE getchar
+
+	MOV TECDT, R0			
+	CLR TECST
+
+	RTS R7
+;		
+;------------------------------------------------------------------------------
+; void	putchar(BYTE c)
+;------------------------------------------------------------------------------
+putchar:
+
+	CMP #h08, R5					; validar movimentacao do cursor
+	BEQ BackSpace
+
+	CMP #h0D, R5
+	BEQ CarriageReturn
+
+	CMP #h0A, R5
+	BEQ LineFeed
+
+	CMP #h7A, R5					; valida se é um caracter valido
+	BMI FimPutchar
+	CMP R5, #h20
+	BMI FimPutchar
+
+	EscreveUmCaracter:
+
+		CMP Cursor, #65530			; valida se o cursor esta em area valida
+		BEQ FimPutchar
+		MOV Cursor, R2
+		MOV R5, (R2)
+		INC Cursor
+		JMP FimPutchar
+
+	LineFeed:					; limpa visor
+		
+		JSR R7, FuncaoLimparAreaCaracteres
+		JMP FimPutchar
+
+	CarriageReturn:
+
+		MOV #VISOR, Cursor			; retorna o cursor para posicao inicial
+		JMP FimPutchar
+
+	BackSpace:	
+
+		CMP #VISOR, Cursor			; Valida se já não está no inicio do visor
+		BEQ FimPutchar
+		DEC Cursor		
+		JMP FimPutchar
+	
+	FimPutchar:
+		RTS R7
+
+;		
+;------------------------------------------------------------------------------
+; void	putmsg(BYTE *msg)
+;------------------------------------------------------------------------------
+putmsg:
+	
+	MOV R5, PosicaoMsg			
+
+	putmsg_loop:
+		
+		MOV PosicaoMsg, R1
+		DEC R1
+		MOV (R1), R5
+		AND #h00FF, R5				; pega os bits menos significativos
+
+		CMP R5, #h0000
+		BEQ FimPutmsg
+
+		JSR R7, putchar
+		INC PosicaoMsg			
+		JMP putmsg_loop
+
+	FimPutmsg:
+		RTS R7
+
+;		
+;------------------------------------------------------------------------------
+; void	timer(WORD tempo, WORD callback)
+;------------------------------------------------------------------------------
+timer:
+
+	MOV #1, LigarTimer
+	MOV R5, Timer_16Bits
+	MOV R4, Callback
+
+	RTS R7
+				
+;		
+;------------------------------------------------------------------------------
+; WORD	volume()
+;------------------------------------------------------------------------------
+volume:	
+		MOV #0, VolumeVariavel		
+	
+	TransformarVariaveisEmDecimal:
+
+		MOV #65533, R3						; parte centena
+		MOV (R3), VolumeVariavelCentena
+		AND #h000F, VolumeVariavelCentena
+		MOV VolumeVariavelCentena, VolumeVariavelAux
+	
+		MOV #99, R4
+		
+		CentenaLoop:
+		
+			ADD VolumeVariavelAux, VolumeVariavelCentena
+			SOB R4, CentenaLoop
+		
+		MOV #65534, R3						; parte dezena
+		MOV (R3), VolumeVariavelDezena
+		AND #h000F, VolumeVariavelDezena
+		MOV VolumeVariavelDezena, VolumeVariavelAux
+	
+		MOV #9, R4
+	
+		DezenaLoop:
+			ADD VolumeVariavelAux, VolumeVariavelDezena
+			SOB R4, DezenaLoop
+							
+		MOV #65535, R3
+		MOV (R3), VolumeVariavelUnidade
+		AND #h000F, VolumeVariavelUnidade
+		
+		ADD VolumeVariavelCentena, VolumeVariavel
+		ADD VolumeVariavelDezena, VolumeVariavel
+		ADD VolumeVariavelUnidade, VolumeVariavel
+		
+		MOV VolumeVariavel, R0
+
+	RTS R7
+	
+	NOP
+	NOP
+	NOP
+
+Variaveis:	
+	
+	VolumeVariavelCentena: 	DW 0
+	VolumeVariavelDezena: 	DW 0
+	VolumeVariavelUnidade: 	DW 0
+	VolumeVariavelAux:	DW 0
+
+	VolumeVariavel:		DW 0
+	Cursor: 		DW VISOR
+	PosicaoMsg:		DW 0
+	LigarTimer:		DW 0
+	Timer_16Bits:		DW 0
+	Callback:		DW 0
+	
+	TipoOperacaoVolume:	DW 0	; 1 = Soma, 2 = Subtracao
+	ValorTeclaVolume:	DW 0
+	ByteVolume:		DW 0
+	TeclaVolume:		DW 0
