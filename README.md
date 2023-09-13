@@ -8,4 +8,4 @@ How to use:
 - Read the the file "descricao" from pack_alunos_kernel folder before start
 - The files "TrabalhoKernelCesar" contains the complete program
 
-Note: It helps to think how a computer works. University project.
+Note: University project.
